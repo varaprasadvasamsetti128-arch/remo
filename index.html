@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>2D Dino Runner Game</title>
+    <style>
+        :root {
+            --bg-color: #f7f7f7;
+            --text-color: #535353;
+            --canvas-border: #333333;
+        }
+
+        body {
+            font-family: 'Courier New', Courier, monospace;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            overflow: hidden;
+            user-select: none;
+        }
+
+        h1 {
+            margin-bottom: 5px;
+            font-size: 2rem;
+        }
+
+        .instructions {
+            margin-bottom: 20px;
+            font-size: 0.9rem;
+            color: #777;
+        }
+
+        #game-container {
+            position: relative;
+        }
+
+        canvas {
+            background-color: #ffffff;
+            border-bottom: 2px solid var(--canvas-border);
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.05);
+            display: block;
+        }
+
+        .game-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 800px;
+            height: 250px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            background-color: rgba(255, 255, 255, 0.7);
+            font-weight: bold;
+        }
+
+        .hidden {
+            display: none !important;
+        }
+
+        .btn-restart {
+            margin-top: 15px;
+            padding: 10px 20px;
+            font-family: inherit;
+            font-size: 1rem;
+            background-color: var(--text-color);
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+
+        .btn-restart:hover {
+            background-color: #333;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>2D T-Rex Runner</h1>
+    <div class="instructions">Press <b>SPACEBAR</b> or <b>UP ARROW</b> / Tap screen to Jump</div>
+
+    <div id="game-container">
+        <canvas id="gameCanvas" width="800" height="250"></canvas>
+
+        <div id="game-over-screen" class="game-overlay hidden">
+            <div style="font-size: 2rem; letter-spacing: 2px;">G A M E  O V E R</div>
+            <button class="btn-restart" onclick="resetGame()">Play Again</button>
+        </div>
+        
+        <div id="start-screen" class="game-overlay">
+            <div style="font-size: 1.5rem;">PRESS SPACE TO START</div>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        const gameOverScreen = document.getElementById('game-over-screen');
+        const startScreen = document.getElementById('start-screen');
+
+        // --- GLOBAL GAME CONFIGURATION & STATE ---
+        let gameActive = false;
+        let isGameOver = false;
+        let score = 0;
+        let highScore = 0;
+        let gameSpeed = 6;
+        const maxGameSpeed = 15;
+        let scoreTimer = 0;
+
+        // Physics Constants
+        const GRAVITY = 0.6;
+
+        // --- ENTITY OBJECT BLUEPRINTS ---
+
+        // 1. Dino Character Vector Mapping
+        const dino = {
+            x: 50,
+            y: 200,
+            width: 44,
+            height: 48,
+            velocityY: 0,
+            jumpForce: 12,
+            isJumping: false,
+            legFrame: 0,
+            frameTimer: 0,
+
+            update() {
+                // Apply Gravity physics
+                this.velocityY += GRAVITY;
+                this.y += this.velocityY;
+
+                // Ground Collision enforcement
+                const groundY = canvas.height - this.height - 10; // 10px padding from canvas bottom floor
+                if (this.y >= groundY) {
+                    this.y = groundY;
+                    this.velocityY = 0;
+                    this.isJumping = false;
+                }
+
+                // Leg running animation cycling
+                if (!this.isJumping && gameActive) {
+                    this.frameTimer++;
+                    if (this.frameTimer > 8) { // Switch frames every 8 render frames
+                        this.legFrame = this.legFrame === 0 ? 1 : 0;
+                        this.frameTimer = 0;
+                    }
+                }
+            },
+
+            jump() {
+                if (!this.isJumping) {
+                    this.velocityY = -this.jumpForce;
+                    this.isJumping = true;
+                    this.legFrame = 0; // Static frame while mid-air
+                }
+            },
+
+            draw() {
+                ctx.fillStyle = '#535353';
+                
+                // Draw Body Box
+                ctx.fillRect(this.x, this.y, this.width, this.height - 12);
+                // Draw Head/Snout
+                ctx.fillRect(this.x + 16, this.y - 12, 28, 16);
+                // Eye details
+                ctx.clearRect(this.x + 24, this.y - 8, 4, 4);
+
+                // Alternating Pixelated Feet/Legs simulation logic
+                ctx.fillStyle = '#535353';
+                if (this.isJumping) {
+                    ctx.fillRect(this.x + 8, this.y + 36, 6, 12);
+                    ctx.fillRect(this.x + 24, this.y + 36, 6, 12);
+                } else {
+                    // Left leg up/down switch
+                    if (this.legFrame === 0) {
+                        ctx.fillRect(this.x + 8, this.y + 36, 6, 12);   // Leg 1 Down
+                        ctx.fillRect(this.x + 24, this.y + 36, 6, 6);   // Leg 2 Up
+                    } else {
+                        ctx.fillRect(this.x + 8, this.y + 36, 6, 6);    // Leg 1 Up
+                        ctx.fillRect(this.x + 24, this.y + 36, 6, 12);  // Leg 2 Down
+                    }
+                }
+            }
+        };
+
+        // 2. Obstacle Pool Structures (Cacti)
+        let obstacles = [];
+        let obstacleSpawnTimer = 0;
+
+        class Obstacle {
+            constructor() {
+                this.x = canvas.width;
+                // Randomized wide vs narrow cacti variants
+                this.type = Math.random() > 0.5 ? 'large' : 'small';
+                this.width = this.type === 'large' ? 24 : 15;
+                this.height = this.type === 'large' ? 50 : 35;
+                this.y = canvas.height - this.height - 10;
+            }
+
+            update() {
+                this.x -= gameSpeed;
+            }
+
+            draw() {
+                ctx.fillStyle = '#535353';
+                // Render procedural pixel cactus rectangles
+                ctx.fillRect(this.x, this.y, this.width, this.height);
+                
+                // Extra cactus side branch decoration details
+                if (this.type === 'large') {
+                    ctx.fillRect(this.x - 6, this.y + 12, 6, 18);
+                    ctx.fillRect(this.x + this.width, this.y + 8, 6, 22);
+                }
+            }
+        }
+
+        // 3. Decorative Horizon Clouds background elements logic
+        let clouds = [];
+        class Cloud {
+            constructor() {
+                this.x = canvas.width;
+                this.y = Math.random() * 80 + 20; // Float heights randomly
+                this.width = 50;
+                this.height = 15;
+                this.speed = gameSpeed * 0.2; // Slow parallax scroll movement
+            }
+            update() { this.x -= this.speed; }
+            draw() {
+                ctx.fillStyle = '#e0e0e0';
+                ctx.fillRect(this.x, this.y, this.width, this.height);
+            }
+        }
+
+        // --- ENGINE EVENT HANDLERS ---
+        window.addEventListener('keydown', (e) => {
+            if (e.code === 'Space' || e.code === 'ArrowUp') {
+                e.preventDefault();
+                handleActionTrigger();
+            }
+        });
+
+        // Touch input compatibility for mobile formats
+        canvas.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            handleActionTrigger();
+        });
+
+        function handleActionTrigger() {
+            if (!gameActive && !isGameOver) {
+                // Initialize game active sequence
+                gameActive = true;
+                startScreen.classList.add('hidden');
+            } else if (gameActive && !isGameOver) {
+                dino.jump();
+            }
+        }
+
+        // --- TICK PROCESS LOOP ENGINE ---
+        function gameLoop() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // Draw Ground Floor Line Vector
+            ctx.strokeStyle = '#535353';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(0, canvas.height - 10);
+            ctx.lineTo(canvas.width, canvas.height - 10);
+            ctx.stroke();
+
+            // Background Parallax Layer Processing
+            if (gameActive && !isGameOver) {
+                if (Math.random() < 0.005) clouds.push(new Cloud());
+            }
+            clouds.forEach((cloud, index) => {
+                if (gameActive && !isGameOver) cloud.update();
+                cloud.draw();
+                if (cloud.x + cloud.width < 0) clouds.splice(index, 1);
+            });
+
+            // Dino Actor Processing Engine update ticks
+            dino.update();
+            dino.draw();
+
+            if (gameActive && !isGameOver) {
+                // Score calculations
+                scoreTimer++;
+                if (scoreTimer >= 5) { // Gain 1 point every 5 ticks
+                    score++;
+                    scoreTimer = 0;
+                    
+                    // Increment environmental velocity difficulty dynamically
+                    if (score % 100 === 0 && gameSpeed < maxGameSpeed) {
+                        gameSpeed += 0.5;
+                    }
+                }
+
+                // Procedural Obstacle Spawning Scheduler
+                obstacleSpawnTimer++;
+                // Add minor structural variance factor to random spawning distributions
+                const randomSpawnInterval = Math.floor(Math.random() * 40) + 75; 
+                if (obstacleSpawnTimer > randomSpawnInterval) {
+                    obstacles.push(new Obstacle());
+                    obstacleSpawnTimer = 0;
+                }
+            }
+
+            // Map Processing Obstacle Arrays
+            obstacles.forEach((obs, index) => {
+                if (gameActive && !isGameOver) obs.update();
+                obs.draw();
+
+                // Memory collection optimization cleanup routine
+                if (obs.x + obs.width < 0) {
+                    obstacles.splice(index, 1);
+                }
+
+                // Axis-Aligned Bounding Box (AABB) Collision detection intersection checking
+                if (
+                    dino.x < obs.x + obs.width &&
+                    dino.x + dino.width > obs.x &&
+                    dino.y < obs.y + obs.height &&
+                    dino.y + dino.height > obs.y
+                ) {
+                    triggerGameOver();
+                }
+            });
+
+            // High Score UI Text Printing Rendering Layouts
+            drawScoreboard();
+
+            requestAnimationFrame(gameLoop);
+        }
+
+        function drawScoreboard() {
+            ctx.fillStyle = '#535353';
+            ctx.font = "bold 16px 'Courier New'";
+            
+            const currentScoreStr = String(score).padStart(5, '0');
+            const highScoreStr = String(highScore).padStart(5, '0');
+            
+            ctx.fillText(`HI ${highScoreStr}  ${currentScoreStr}`, canvas.width - 160, 25);
+        }
+
+        function triggerGameOver() {
+            isGameOver = true;
+            gameActive = false;
+            if (score > highScore) {
+                highScore = score;
+            }
+            gameOverScreen.classList.remove('hidden');
+        }
+
+        function resetGame() {
+            obstacles = [];
+            clouds = [];
+            score = 0;
+            scoreTimer = 0;
+            gameSpeed = 6;
+            obstacleSpawnTimer = 0;
+            isGameOver = false;
+            gameActive = true;
+            
+            dino.y = canvas.height - dino.height - 10;
+            dino.velocityY = 0;
+            dino.isJumping = false;
+
+            gameOverScreen.classList.add('hidden');
+        }
+
+        // Boot-up Execution initialization logic runtime
+        requestAnimationFrame(gameLoop);
+    </script>
+</body>
+</html>
